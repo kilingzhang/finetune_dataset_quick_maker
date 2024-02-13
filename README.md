@@ -1,0 +1,3 @@
+# finetune_dataset_quick_maker
+
+finetune_dataset_quick_maker 是一个为LLM设计的微调数据集生成、调整、批量处理工具，速来制作自己的分身。
