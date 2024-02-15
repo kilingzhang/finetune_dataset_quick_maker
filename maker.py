@@ -7,7 +7,6 @@ from pydantic import parse_obj_as, ValidationError
 from llm import (
     get_split_record,
     get_gpt_record,
-    fix_gpt_record,
     auto_gpt_record,
     Item,
     ItemAdapter,
@@ -17,7 +16,7 @@ sys.setrecursionlimit(100000)
 
 index_file = "index.json"
 data_file = "self_cognition.json"
-data_file = "updated_data.json"
+# data_file = "updated_data.json"
 
 
 def rerun():
@@ -25,14 +24,33 @@ def rerun():
 
 
 def save_data():
-    with open(data_file, "w") as f:
+    st.session_state["filename_index"] = (
+        st.session_state["index"] // st.session_state["split_num"]
+    )
+    filename = f'{st.session_state["filename_prefix"]}_{st.session_state["filename_index"]}.json'
+    with open(filename, "w") as f:
         json.dump(st.session_state["data"], f, ensure_ascii=False, indent=4)
         f.close()
 
 
 def save_index():
+    st.session_state["filename_index"] = (
+        st.session_state["index"] // st.session_state["split_num"]
+    )
     with open(index_file, "w") as f:
-        json.dump({"index": st.session_state["index"]}, f, ensure_ascii=False, indent=4)
+        json.dump(
+            {
+                "index": st.session_state["index"],
+                "split_num": st.session_state["split_num"],
+                "split_count": st.session_state["split_count"],
+                "count": st.session_state["count"],
+                "filename_index": st.session_state["filename_index"],
+                "filename_prefix": st.session_state["filename_prefix"],
+            },
+            f,
+            ensure_ascii=False,
+            indent=4,
+        )
         f.close()
 
 
@@ -47,24 +65,100 @@ def navigate_previous():
 
 
 def navigate_next():
-    update_index(min(len(st.session_state["data"]) - 1, st.session_state["index"] + 1))
+    update_index(
+        min(
+            st.session_state["count"] - 1,
+            st.session_state["index"] + 1,
+        )
+    )
     st.session_state["navigate"] = navigate_next
 
 
+def read_file(index, filename_prefix):
+    filename = f"{filename_prefix}_{index}.json"
+    with open(filename, "r") as file:
+        data = json.load(file)
+        file.close()
+    return data
+
+
+def split_and_write(data, count, filename_prefix):
+    num_batches = len(data) // count
+    remainder = len(data) % count
+
+    for i in range(num_batches):
+        batch_data = data[i * count : (i + 1) * count]
+        filename = f"{filename_prefix}_{i}.json"
+        with open(filename, "w") as file:
+            json.dump(
+                batch_data,
+                file,
+                ensure_ascii=False,
+                indent=4,
+            )
+            file.close()
+
+    if remainder > 0:
+        batch_data = data[num_batches * count :]
+        filename = f"{filename_prefix}_{num_batches}.json"
+        with open(filename, "w") as file:
+            json.dump(
+                batch_data,
+                file,
+                ensure_ascii=False,
+                indent=4,
+            )
+            file.close()
+
+
 def load_data():
-    with open(data_file, "r") as f:
-        st.session_state["data"] = json.load(f)
-        f.close()
-    if os.path.exists(index_file):
-        with open(index_file, "r") as f:
+    filename_prefix = "./data/" + data_file.split(".")[0]
+    split_num = 100
+
+    if not os.path.exists(index_file):
+
+        data = []
+        with open(data_file, "r") as f:
             data = json.load(f)
-            if "index" in data:
-                st.session_state["index"] = data["index"]
             f.close()
+        count = len(data)
+        split_count = (count - 1) // split_num + 1
+
+        with open(index_file, "w") as f:
+            json.dump(
+                {
+                    "index": 0,
+                    "split_num": split_num,
+                    "split_count": split_count,
+                    "count": count,
+                    "filename_index": 0,
+                    "filename_prefix": filename_prefix,
+                },
+                f,
+                ensure_ascii=False,
+                indent=4,
+            )
+            f.close()
+
+        split_and_write(data, split_num, filename_prefix)
+
+    with open(index_file, "r") as f:
+        data = json.load(f)
+        st.session_state["index"] = data["index"]
+        st.session_state["split_num"] = data["split_num"]
+        st.session_state["split_count"] = data["split_count"]
+        st.session_state["count"] = data["count"]
+        st.session_state["filename_index"] = data["filename_index"]
+        st.session_state["filename_prefix"] = data["filename_prefix"]
+        f.close()
+
+    st.session_state["data"] = read_file(
+        st.session_state["filename_index"], st.session_state["filename_prefix"]
+    )
 
 
 def load_item():
-    index = st.session_state["index"]
+    index = st.session_state["index"] % st.session_state["split_num"]
     if index < len(st.session_state["data"]):
         item = st.session_state["data"][index]
     else:
@@ -73,6 +167,14 @@ def load_item():
     if "input" in item:
         st.session_state["input"] = item["input"]
     st.session_state["output"] = item["output"]
+    if "before_instruction" in item:
+        st.session_state["before_instruction"] = item["before_instruction"]
+    else:
+        st.session_state["before_instruction"] = ""
+    if "before_output" in item:
+        st.session_state["before_output"] = item["before_output"]
+    else:
+        st.session_state["before_output"] = ""
     if "reason" in item:
         st.session_state["reason"] = item["reason"]
     else:
@@ -111,39 +213,48 @@ def initialize_session_state():
     if "deleted" not in st.session_state:
         st.session_state["deleted"] = False
 
-    if os.path.exists(data_file):
-        load_data()
-        load_item()
 
-
+load_data()
+load_item()
 initialize_session_state()
 
 
 def update_sidebar():
-    max_value = (len(st.session_state["data"]) - 1) // per_page + 1
+    max_value = (st.session_state["count"] - 1) // per_page + 1
     page = st.sidebar.number_input(
         "Page Count : "
         + str(max_value)
         + "\n\n当前进度 : "
         + str(st.session_state["index"] + 1)
         + " / "
-        + str(len(st.session_state["data"]))
+        + str(st.session_state["count"])
         + " ("
         + str(
-            round(
-                (st.session_state["index"] + 1) / len(st.session_state["data"]) * 100, 6
-            )
+            round((st.session_state["index"] + 1) / st.session_state["count"] * 100, 6)
         )
         + "%)",
         min_value=1,
         max_value=max_value,
         value=int((st.session_state["index"] / per_page + 1)),
     )
-    st.sidebar.title("Instructions")
-    for i in range(
-        int((page - 1) * per_page),
-        int(min(len(st.session_state["data"]), page * per_page)),
-    ):
+
+    st.session_state["filename_index"] = (
+        (page - 1) * per_page // st.session_state["split_num"]
+    )
+
+    st.session_state["data"] = read_file(
+        st.session_state["filename_index"], st.session_state["filename_prefix"]
+    )
+
+    start = int((page - 1) * per_page) % st.session_state["split_num"]
+    end = int(
+        min(
+            len(st.session_state["data"]),
+            page * per_page
+            - st.session_state["filename_index"] * st.session_state["split_num"],
+        )
+    )
+    for i in range(start, end):
         key = "instruction_" + str(i)
         title = "[" + st.session_state["data"][i]["instruction"] + "]"
         desc = "[" + st.session_state["data"][i]["output"] + "]"
@@ -157,7 +268,9 @@ def update_sidebar():
             title = ":blue" + title
             desc = ":blue" + desc
         if st.sidebar.button(title, key):
-            update_index(i)
+            update_index(
+                i + st.session_state["filename_index"] * st.session_state["split_num"]
+            )
             rerun()
         st.sidebar.caption(desc)
 
@@ -182,8 +295,13 @@ add_num = st.number_input("输入要分裂的数据数量", min_value=1, value=1
 instruction = st.text_area(
     "Instruction", value=st.session_state["instruction"], height=100
 )
-input_text = st.text_area("Input", value=st.session_state["input"], height=40)
+if st.session_state["before_instruction"] != "":
+    st.caption("Before Instruction : " + st.session_state["before_instruction"])
+# input_text = st.text_area("Input", value=st.session_state["input"], height=40)
+input_text = ""
 output = st.text_area("Output", value=st.session_state["output"], height=120)
+if st.session_state["before_output"] != "":
+    st.caption("Before Output : " + st.session_state["before_output"])
 
 
 def add_record():
@@ -191,8 +309,9 @@ def add_record():
 
 
 def save_record(item):
-    if st.session_state["index"] < len(st.session_state["data"]):
-        beforeItem = st.session_state["data"][st.session_state["index"]]
+    index = st.session_state["index"] % st.session_state["split_num"]
+    if index < len(st.session_state["data"]):
+        beforeItem = st.session_state["data"][index]
         if (
             "before_instruction" not in beforeItem
             and item["instruction"] != beforeItem["instruction"]
@@ -200,17 +319,26 @@ def save_record(item):
             beforeItem["before_instruction"] = beforeItem["instruction"]
         if "before_output" not in beforeItem and item["output"] != beforeItem["output"]:
             beforeItem["before_output"] = beforeItem["output"]
-        if "before_instruction" in beforeItem:
+
+        if (
+            "before_instruction" in beforeItem
+            and item["instruction"] != beforeItem["before_instruction"]
+        ):
             item["before_instruction"] = beforeItem["before_instruction"]
-        if "before_output" in beforeItem:
+
+        if (
+            "before_output" in beforeItem
+            and item["output"] != beforeItem["before_output"]
+        ):
             item["before_output"] = beforeItem["before_output"]
+
         if "reason" in beforeItem:
             item["reason"] = beforeItem["reason"]
         if "is_relevant" in beforeItem:
             item["is_relevant"] = beforeItem["is_relevant"]
         if "deleted" in beforeItem:
             item["deleted"] = beforeItem["deleted"]
-        st.session_state["data"][st.session_state["index"]] = item
+        st.session_state["data"][index] = item
     else:
         st.session_state["data"].append(item)
     save_data()
@@ -248,19 +376,6 @@ def gpt_record(query):
     save_record(query)
 
 
-def fix_record(query):
-    record = fix_gpt_record(query)
-    print(record)
-    queries = [record]
-    # 验证 queries
-    try:
-        queries = ItemAdapter.validate_python(queries)
-    except ValidationError as e:
-        st.warning(f"Queries validation failed: {e}")
-        return
-    save_record(record)
-
-
 def auto_record(query):
     record = auto_gpt_record(query)
     queries = [record]
@@ -296,18 +411,16 @@ if cols[2].button("ask"):
         gpt_record({"instruction": instruction, "input": input_text, "output": output})
         rerun()
 
-# if cols[3].button("fix"):
-#     with st.spinner("纠正中..."):
-#         fix_record({"instruction": instruction, "input": input_text, "output": output})
-#         rerun()
-
 
 def auto_fix():
     with st.spinner("自动纠正中..."):
+        if st.session_state["index"] == (st.session_state["count"] - 1):
+            st.session_state["is_auto_fix"] = False
+
         record = auto_record(
             {"instruction": instruction, "input": input_text, "output": output}
         )
-        print(record)
+        print(json.dumps(record, ensure_ascii=False, indent=4))
         if (
             "is_relevant" in record
             and "reason" in record

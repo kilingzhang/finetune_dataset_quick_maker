@@ -64,22 +64,6 @@ def get_gpt_record(query):
     return res.content
 
 
-def fix_gpt_record(query):
-    del query["input"]
-    # And a query intented to prompt a language model to populate the data structure.
-    parser = JsonOutputParser(pydantic_object=Item)
-
-    prompt = PromptTemplate(
-        template="根据输入的llm未标注的训练数据，排除对话中的无用信息，只保留明确有异议的对话信息(如果存在关个人隐私相关的数据，请重写，不可展示真实数据)。\n{query}\n。\n{format_instructions}。\n",
-        input_variables=["query"],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
-    )
-
-    chain = prompt | chat | parser
-
-    return chain.invoke({"query": json.dumps(query, ensure_ascii=False)})
-
-
 def auto_gpt_record(query):
     del query["input"]
     # And a query intented to prompt a language model to populate the data structure.
