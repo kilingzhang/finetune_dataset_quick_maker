@@ -2,32 +2,65 @@ from typing import List
 import streamlit as st
 import json
 import os
+import sys
 from pydantic import parse_obj_as, ValidationError
-from llm import get_split_record, get_gpt_record, fix_gpt_record, Item, ItemAdapter
+from llm import (
+    get_split_record,
+    get_gpt_record,
+    fix_gpt_record,
+    auto_gpt_record,
+    Item,
+    ItemAdapter,
+)
+
+sys.setrecursionlimit(100000)
 
 index_file = "index.json"
 data_file = "self_cognition.json"
 data_file = "updated_data.json"
 
 
+def rerun():
+    st.rerun()
+
+
 def save_data():
     with open(data_file, "w") as f:
         json.dump(st.session_state["data"], f, ensure_ascii=False, indent=4)
+        f.close()
 
 
 def save_index():
     with open(index_file, "w") as f:
         json.dump({"index": st.session_state["index"]}, f, ensure_ascii=False, indent=4)
+        f.close()
+
+
+def update_index(index):
+    st.session_state["index"] = index
+    save_index()
+
+
+def navigate_previous():
+    update_index(max(0, st.session_state["index"] - 1))
+    st.session_state["navigate"] = navigate_previous
+
+
+def navigate_next():
+    update_index(min(len(st.session_state["data"]) - 1, st.session_state["index"] + 1))
+    st.session_state["navigate"] = navigate_next
 
 
 def load_data():
     with open(data_file, "r") as f:
         st.session_state["data"] = json.load(f)
+        f.close()
     if os.path.exists(index_file):
         with open(index_file, "r") as f:
             data = json.load(f)
             if "index" in data:
                 st.session_state["index"] = data["index"]
+            f.close()
 
 
 def load_item():
@@ -37,8 +70,21 @@ def load_item():
     else:
         item = {"instruction": "", "input": "", "output": ""}
     st.session_state["instruction"] = item["instruction"]
-    st.session_state["input"] = item["input"]
+    if "input" in item:
+        st.session_state["input"] = item["input"]
     st.session_state["output"] = item["output"]
+    if "reason" in item:
+        st.session_state["reason"] = item["reason"]
+    else:
+        st.session_state["reason"] = ""
+    if "is_relevant" in item:
+        st.session_state["is_relevant"] = item["is_relevant"]
+    else:
+        st.session_state["is_relevant"] = True
+    if "deleted" in item:
+        st.session_state["deleted"] = item["deleted"]
+    else:
+        st.session_state["deleted"] = False
 
 
 def initialize_session_state():
@@ -54,6 +100,16 @@ def initialize_session_state():
         st.session_state["output"] = ""
     if "current_page" not in st.session_state:
         st.session_state["current_page"] = 1
+    if "navigate" not in st.session_state:
+        st.session_state["navigate"] = navigate_next
+    if "is_auto_fix" not in st.session_state:
+        st.session_state["is_auto_fix"] = False
+    if "reason" not in st.session_state:
+        st.session_state["reason"] = ""
+    if "is_relevant" not in st.session_state:
+        st.session_state["is_relevant"] = True
+    if "deleted" not in st.session_state:
+        st.session_state["deleted"] = False
 
     if os.path.exists(data_file):
         load_data()
@@ -61,12 +117,6 @@ def initialize_session_state():
 
 
 initialize_session_state()
-
-
-def update_index(index):
-    st.session_state["index"] = index
-    save_index()
-    st.rerun()
 
 
 def update_sidebar():
@@ -79,11 +129,15 @@ def update_sidebar():
         + " / "
         + str(len(st.session_state["data"]))
         + " ("
-        + str(round((st.session_state["index"] + 1) / len(st.session_state["data"]), 6))
+        + str(
+            round(
+                (st.session_state["index"] + 1) / len(st.session_state["data"]) * 100, 6
+            )
+        )
         + "%)",
         min_value=1,
         max_value=max_value,
-        value=1,
+        value=int((st.session_state["index"] / per_page + 1)),
     )
     st.sidebar.title("Instructions")
     for i in range(
@@ -91,17 +145,21 @@ def update_sidebar():
         int(min(len(st.session_state["data"]), page * per_page)),
     ):
         key = "instruction_" + str(i)
-        if st.sidebar.button(st.session_state["data"][i]["instruction"], key):
+        title = "[" + st.session_state["data"][i]["instruction"] + "]"
+        desc = "[" + st.session_state["data"][i]["output"] + "]"
+        if (
+            "deleted" in st.session_state["data"][i]
+            and st.session_state["data"][i]["deleted"]
+        ):
+            title = ":red" + title
+            desc = ":red" + desc
+        else:
+            title = ":blue" + title
+            desc = ":blue" + desc
+        if st.sidebar.button(title, key):
             update_index(i)
-        st.sidebar.caption(st.session_state["data"][i]["output"])
-
-
-def navigate_previous():
-    update_index(max(0, st.session_state["index"] - 1))
-
-
-def navigate_next():
-    update_index(min(len(st.session_state["data"]) - 1, st.session_state["index"] + 1))
+            rerun()
+        st.sidebar.caption(desc)
 
 
 def delete_record():
@@ -109,9 +167,16 @@ def delete_record():
         st.session_state["data"].pop(st.session_state["index"])
         save_data()
         update_index(min(len(st.session_state["data"]) - 1, st.session_state["index"]))
-        st.toast("当前记录已删除")
-        st.rerun()
+        st.success("当前记录已删除")
 
+
+if st.session_state["reason"] != "":
+    reason = "[" + st.session_state["reason"] + "]"
+    if "deleted" in st.session_state and st.session_state["deleted"]:
+        reason = ":red" + reason
+    else:
+        reason = ":blue" + reason
+    st.caption(reason)
 
 add_num = st.number_input("输入要分裂的数据数量", min_value=1, value=1)
 instruction = st.text_area(
@@ -127,12 +192,29 @@ def add_record():
 
 def save_record(item):
     if st.session_state["index"] < len(st.session_state["data"]):
+        beforeItem = st.session_state["data"][st.session_state["index"]]
+        if (
+            "before_instruction" not in beforeItem
+            and item["instruction"] != beforeItem["instruction"]
+        ):
+            beforeItem["before_instruction"] = beforeItem["instruction"]
+        if "before_output" not in beforeItem and item["output"] != beforeItem["output"]:
+            beforeItem["before_output"] = beforeItem["output"]
+        if "before_instruction" in beforeItem:
+            item["before_instruction"] = beforeItem["before_instruction"]
+        if "before_output" in beforeItem:
+            item["before_output"] = beforeItem["before_output"]
+        if "reason" in beforeItem:
+            item["reason"] = beforeItem["reason"]
+        if "is_relevant" in beforeItem:
+            item["is_relevant"] = beforeItem["is_relevant"]
+        if "deleted" in beforeItem:
+            item["deleted"] = beforeItem["deleted"]
         st.session_state["data"][st.session_state["index"]] = item
     else:
         st.session_state["data"].append(item)
     save_data()
-    st.toast("数据已保存")
-    st.rerun()
+    st.success("数据已保存")
 
 
 def split_record(query, num=None):
@@ -145,8 +227,8 @@ def split_record(query, num=None):
     try:
         queries = ItemAdapter.validate_python(queries)
     except ValidationError as e:
-        st.toast(f"Queries validation failed: {e}")
-        st.rerun()
+        st.warning(f"Queries validation failed: {e}")
+        return
 
     print(json.dumps(queries, ensure_ascii=False, indent=4))
 
@@ -156,10 +238,8 @@ def split_record(query, num=None):
             st.session_state["data"].append(query)
         else:
             st.session_state["data"].insert(st.session_state["index"] + 1, query)
-    st.toast(f"已插入 {len(queries)} 条数据")
+    st.success(f"已插入 {len(queries)} 条数据")
     save_data()
-    navigate_next()
-    st.rerun()
 
 
 def gpt_record(query):
@@ -169,50 +249,139 @@ def gpt_record(query):
 
 
 def fix_record(query):
-    query = fix_gpt_record(query)
-    print(query)
-    queries = [query]
+    record = fix_gpt_record(query)
+    print(record)
+    queries = [record]
     # 验证 queries
     try:
         queries = ItemAdapter.validate_python(queries)
     except ValidationError as e:
-        st.toast(f"Queries validation failed: {e}")
-        st.rerun()
-    save_record(query)
+        st.warning(f"Queries validation failed: {e}")
+        return
+    save_record(record)
 
 
-per_page = 100
+def auto_record(query):
+    record = auto_gpt_record(query)
+    queries = [record]
+    # 验证 queries
+    try:
+        queries = ItemAdapter.validate_python(queries)
+    except ValidationError as e:
+        st.warning(f"Queries validation failed: {e}")
+        query["is_relevant"] = False
+        return query
+    return record
+
+
+per_page = 5
 update_sidebar()
 
-cols = st.columns(8)
+cols = st.columns(9)
 
-if cols[0].button("新增"):
+if cols[0].button("add"):
     add_record()
+    rerun()
 
-if cols[1].button("分裂"):
+if cols[1].button("split"):
     with st.spinner("分裂中..."):
         split_record(
             query={"instruction": instruction, "input": input_text, "output": output}
         )
+        navigate_next()
+        rerun()
 
-if cols[2].button("回答"):
+if cols[2].button("ask"):
     with st.spinner("思考中..."):
         gpt_record({"instruction": instruction, "input": input_text, "output": output})
+        rerun()
 
-if cols[3].button("纠正"):
-    with st.spinner("纠正中..."):
-        fix_record({"instruction": instruction, "input": input_text, "output": output})
-
-
-if cols[4].button("删除"):
-    delete_record()
+# if cols[3].button("fix"):
+#     with st.spinner("纠正中..."):
+#         fix_record({"instruction": instruction, "input": input_text, "output": output})
+#         rerun()
 
 
-if cols[5].button("保存"):
+def auto_fix():
+    with st.spinner("自动纠正中..."):
+        record = auto_record(
+            {"instruction": instruction, "input": input_text, "output": output}
+        )
+        print(record)
+        if (
+            "is_relevant" in record
+            and "reason" in record
+            and record["is_relevant"] == False
+        ):
+            st.warning(record["reason"])
+            save_record(
+                {
+                    "instruction": instruction,
+                    "input": input_text,
+                    "output": output,
+                    "deleted": True,
+                    "is_relevant": record["is_relevant"],
+                    "reason": record["reason"],
+                }
+            )
+            navigate_next()
+        elif (
+            "reason" in record
+            and "instruction" in record
+            and "output" in record
+            and "is_relevant" in record
+        ):
+            st.success(record["reason"])
+            save_record(
+                {
+                    "instruction": record["instruction"],
+                    "input": input_text,
+                    "output": record["output"],
+                    "is_relevant": record["is_relevant"],
+                    "reason": record["reason"],
+                }
+            )
+            navigate_next()
+        rerun()
+
+
+if cols[3].button("auto"):
+    if st.session_state["is_auto_fix"]:
+        st.session_state["is_auto_fix"] = False
+    else:
+        st.session_state["is_auto_fix"] = True
+    rerun()
+
+if cols[4].button("del"):
+    save_record(
+        {
+            "instruction": instruction,
+            "input": input_text,
+            "output": output,
+            "deleted": True,
+        }
+    )
+    rerun()
+
+
+if cols[5].button("save"):
     save_record({"instruction": instruction, "input": input_text, "output": output})
+    rerun()
 
-if cols[6].button("上一个"):
+if cols[6].button("pre"):
+    save_record({"instruction": instruction, "input": input_text, "output": output})
     navigate_previous()
+    rerun()
 
-if cols[7].button("下一个"):
+if cols[7].button("next"):
+    save_record({"instruction": instruction, "input": input_text, "output": output})
     navigate_next()
+    rerun()
+
+
+if st.session_state["is_auto_fix"]:
+    try:
+        auto_fix()
+    except Exception as e:
+        st.warning(f"auto_fix failed: {e}")
+        rerun()
