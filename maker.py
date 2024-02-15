@@ -2,6 +2,7 @@ from typing import List
 import streamlit as st
 import json
 import os
+from dotenv import load_dotenv
 import sys
 from pydantic import parse_obj_as, ValidationError
 from llm import (
@@ -14,13 +15,18 @@ from llm import (
 
 sys.setrecursionlimit(100000)
 
-index_file = "index.json"
-data_file = "self_cognition.json"
-# data_file = "updated_data.json"
-
 
 def rerun():
     st.rerun()
+
+
+data_file = os.getenv("DATA_FILE", "")
+if not os.path.exists(data_file):
+    st.warning(f"{data_file} not found")
+    rerun()
+
+
+index_file = "./data/" + data_file.split(".")[0] + "_index.json"
 
 
 def save_data():
@@ -89,6 +95,8 @@ def split_and_write(data, count, filename_prefix):
     for i in range(num_batches):
         batch_data = data[i * count : (i + 1) * count]
         filename = f"{filename_prefix}_{i}.json"
+        if os.path.exists(filename):
+            continue
         with open(filename, "w") as file:
             json.dump(
                 batch_data,
@@ -101,6 +109,8 @@ def split_and_write(data, count, filename_prefix):
     if remainder > 0:
         batch_data = data[num_batches * count :]
         filename = f"{filename_prefix}_{num_batches}.json"
+        if os.path.exists(filename):
+            return
         with open(filename, "w") as file:
             json.dump(
                 batch_data,
