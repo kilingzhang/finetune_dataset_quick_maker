@@ -2,6 +2,7 @@ from typing import List
 import streamlit as st
 import json
 import os
+import time
 from dotenv import load_dotenv
 import sys
 from pydantic import parse_obj_as, ValidationError
@@ -430,6 +431,7 @@ def auto_fix():
         record = auto_record(
             {"instruction": instruction, "input": input_text, "output": output}
         )
+        print(time.time())
         print(json.dumps(record, ensure_ascii=False, indent=4))
         if (
             "is_relevant" in record
